@@ -61,8 +61,6 @@ type WardrobeItem = {
   seamRadius: number;
   /** "estampa" = só estampa uma peça pronta do modelo; "modelo" = peça nova montada da silhueta da foto. */
   mold: GarmentMode;
-  /** Roupa pronta do site (PRESET_CLOTHES): não pode ser removida do guarda-roupa. */
-  preset: boolean;
   /** Veste a versão de manga comprida da camiseta pronta (suéter). */
   longSleeves: boolean;
 };
@@ -101,7 +99,7 @@ export default function TryOn() {
   const [items, setItems] = useState<WardrobeItem[]>([]);
   // Uma peça da foto vestida em cima e outra embaixo.
   const [selectedIds, setSelectedIds] = useState<Record<Slot, string | null>>({ cima: null, baixo: null });
-  /** Lugar do corpo em edição (a aba Sapatos edita a parte de cima ao soltar uma foto). */
+  /** Lugar do corpo em edição. */
   const activeSlot: Slot = clothTab === "baixo" ? "baixo" : "cima";
   const findItem = (id: string | null) => items.find((i) => i.id === id) ?? null;
   const topItem = findItem(selectedIds.cima);
@@ -110,10 +108,6 @@ export default function TryOn() {
   const select = (slot: Slot, id: string | null) => setSelectedIds((s) => ({ ...s, [slot]: id }));
   const set = <K extends keyof CharacterConfig>(k: K, value: CharacterConfig[K]) =>
     setCharacter((c) => ({ ...c, [k]: value }));
-
-  const updateItem = useCallback((id: string, patch: Partial<WardrobeItem>) => {
-    setItems((list) => list.map((i) => (i.id === id ? { ...i, ...patch } : i)));
-  }, []);
 
   /** Gira o personagem até o lado da estampa, pelo caminho mais curto. */
   const faceSide = useCallback((back: boolean) => {
@@ -138,7 +132,6 @@ export default function TryOn() {
       seamRadius: slot === "cima" ? 0.06 : 0.04,
       // Parte de baixo: em geral a foto é o formato da peça (bermuda, saia…).
       mold: forcedMold ?? (slot === "cima" ? "estampa" : "modelo"),
-      preset: PRESET_CLOTHES.some((p) => p.src === src),
       longSleeves: !!PRESET_CLOTHES.find((p) => p.src === src)?.longSleeves,
     };
     try {
@@ -164,21 +157,6 @@ export default function TryOn() {
     })();
   }, [addItem]);
 
-
-  const onFile = (file?: File) => {
-    if (!file || !file.type.startsWith("image/")) return;
-    void addItem(URL.createObjectURL(file), activeSlot);
-    setCategory("roupas");
-    setClothTab(activeSlot);
-  };
-
-  const removeItem = (id: string) => {
-    const item = items.find((i) => i.id === id);
-    if (item?.src.startsWith("blob:")) URL.revokeObjectURL(item.src);
-    setItems((list) => list.filter((i) => i.id !== id));
-    setSelectedIds((s) => ({ cima: s.cima === id ? null : s.cima, baixo: s.baixo === id ? null : s.baixo }));
-  };
-
   // O item só muda de objeto quando é editado: a peça 3D não é remontada à toa.
   const topLayer = useMemo(() => toLayer(topItem), [topItem]);
   const bottomLayer = useMemo(() => toLayer(bottomItem), [bottomItem]);
@@ -195,14 +173,7 @@ export default function TryOn() {
         : "corpo";
 
   return (
-    <div
-      className="relative flex h-dvh flex-col overflow-hidden bg-[radial-gradient(ellipse_at_50%_35%,#f2faff_0%,#cfe8f7_45%,#8ec6e8_100%)] text-slate-800 lg:block"
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => {
-        e.preventDefault();
-        onFile(e.dataTransfer.files[0]);
-      }}
-    >
+    <div className="relative flex h-dvh flex-col overflow-hidden bg-[radial-gradient(ellipse_at_50%_35%,#f2faff_0%,#cfe8f7_45%,#8ec6e8_100%)] text-slate-800 lg:block">
       {/* Personagem */}
       <main className="relative h-[52dvh] shrink-0 lg:absolute lg:inset-0 lg:h-auto">
         <Scene
@@ -354,19 +325,13 @@ export default function TryOn() {
                 </div>
 
                 {(clothTab === "cima" || clothTab === "baixo") && (
-                  <PhotoWardrobe
-                    slot={activeSlot}
+                  <Wardrobe
                     items={items.filter((i) => i.slot === activeSlot)}
                     selected={selected}
-                    hasReadyPiece={activeSlot === "cima" ? !!modelInfo?.hasShirt : !!modelInfo?.assets.baixo.length}
-                    onFile={onFile}
                     onSelect={(item) => {
-                      select(activeSlot, item?.id ?? null);
-                      if (item) faceSide(item.photoIsBack);
+                      select(activeSlot, item.id);
+                      faceSide(item.photoIsBack);
                     }}
-                    onUpdate={updateItem}
-                    onRemove={removeItem}
-                    onFaceSide={faceSide}
                   />
                 )}
 
@@ -455,151 +420,34 @@ function looksLikeDress(g: ProcessedGarment) {
   return split > total / 2 || wide > total / 2;
 }
 
-const MODE_TEXT: Record<Slot, Record<GarmentMode, string>> = {
-  cima: {
-    estampa: "Usa a camiseta pronta do personagem e só aplica a cor e a estampa da foto.",
-    modelo: "Monta uma peça nova com o formato da foto (vestido, túnica, manga bufante…).",
-  },
-  baixo: {
-    estampa: "Projeta a foto na peça do personagem escolhida abaixo, sem mudar o formato.",
-    modelo: "Monta uma peça nova com o formato da foto (bermuda, short, calça, saia…).",
-  },
-};
-
-function PhotoWardrobe({
-  slot,
+function Wardrobe({
   items,
   selected,
-  hasReadyPiece,
-  onFile,
   onSelect,
-  onUpdate,
-  onRemove,
-  onFaceSide,
 }: {
-  slot: Slot;
   items: WardrobeItem[];
   selected: WardrobeItem | null;
-  /** O personagem tem peça pronta para receber a estampa (camiseta / calça). */
-  hasReadyPiece: boolean;
-  onFile: (file?: File) => void;
-  onSelect: (item: WardrobeItem | null) => void;
-  onUpdate: (id: string, patch: Partial<WardrobeItem>) => void;
-  onRemove: (id: string) => void;
-  onFaceSide: (back: boolean) => void;
+  onSelect: (item: WardrobeItem) => void;
 }) {
-  // Sem peça pronta no personagem, só dá para montar o modelo novo.
-  const mode: GarmentMode = hasReadyPiece ? (selected?.mold ?? "modelo") : "modelo";
   return (
-    <>
-      <div className="grid grid-cols-3 gap-2">
-        <label className="flex aspect-square cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border-2 border-dashed border-sky-300 text-center text-xs font-semibold text-sky-600 transition hover:bg-sky-50">
-          <span className="text-2xl leading-none">+</span>
-          Enviar foto
-          <input
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => {
-              onFile(e.target.files?.[0]);
-              e.target.value = "";
-            }}
-          />
-        </label>
+    <div className="grid grid-cols-3 gap-2">
+      {items.map((item) => (
         <button
-          onClick={() => onSelect(null)}
-          className={`grid aspect-square place-items-center rounded-2xl border-2 bg-sky-50 text-xs font-semibold text-slate-500 transition ${
-            selected === null ? "border-sky-500 ring-2 ring-sky-200" : "border-transparent hover:border-sky-200"
+          key={item.id}
+          onClick={() => onSelect(item)}
+          className={`relative aspect-square overflow-hidden rounded-2xl border-2 bg-sky-50 p-1 transition ${
+            selected?.id === item.id ? "border-sky-500 ring-2 ring-sky-200" : "border-transparent hover:border-sky-200"
           }`}
         >
-          {slot === "cima" ? "Nenhuma" : "Sem foto"}
-        </button>
-        {items.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => onSelect(item)}
-            className={`relative aspect-square overflow-hidden rounded-2xl border-2 bg-sky-50 p-1 transition ${
-              selected?.id === item.id ? "border-sky-500 ring-2 ring-sky-200" : "border-transparent hover:border-sky-200"
-            }`}
-          >
-            {item.garment ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={item.garment.cutoutUrl} alt="Peça" className="size-full object-contain" />
-            ) : (
-              <span className="text-xs text-red-500">Erro</span>
-            )}
-            <span className="absolute bottom-1 left-1 rounded-full bg-white/90 px-1.5 text-[9px] font-bold uppercase text-sky-700 shadow-sm">
-              {item.mold === "estampa" && hasReadyPiece ? "estampa" : "modelo"}
-            </span>
-          </button>
-        ))}
-      </div>
-      <p className="-mt-2 text-xs text-slate-500">
-        {slot === "cima"
-          ? "Envie ou arraste a foto de uma camiseta, blusa ou vestido (fundo liso ou PNG recortado)."
-          : "Envie ou arraste a foto de uma bermuda, calça ou saia, aberta e de frente (fundo liso ou PNG recortado)."}
-      </p>
-
-      {selected && (
-        <div className="flex flex-col gap-4 rounded-2xl bg-sky-50/80 p-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-sky-900">Ajustar peça</h3>
-            {!selected.preset && (
-              <button onClick={() => onRemove(selected.id)} className="text-xs font-semibold text-red-500 hover:underline">
-                Remover
-              </button>
-            )}
-          </div>
-          {selected.error && <p className="rounded-lg bg-red-50 p-2 text-xs text-red-600">{selected.error}</p>}
-
-          <Group title="Tipo">
-            <div className="grid grid-cols-2 gap-1 rounded-full bg-white p-1 text-sm font-semibold">
-              {([["Apenas estampa", "estampa"], ["Modelo novo", "modelo"]] as const).map(([label, value]) => (
-                <button
-                  key={value}
-                  disabled={value === "estampa" && !hasReadyPiece}
-                  onClick={() => onUpdate(selected.id, { mold: value })}
-                  className={`rounded-full py-1 transition disabled:cursor-not-allowed disabled:opacity-40 ${
-                    mode === value ? "bg-sky-500 text-white" : "text-sky-700/70"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <p className="text-xs text-slate-500">
-              {MODE_TEXT[slot][mode]}
-              {!hasReadyPiece && " (O personagem não tem peça pronta para estampar.)"}
-            </p>
-          </Group>
-
-          <Group title="A foto mostra">
-            <div className="grid grid-cols-2 gap-1 rounded-full bg-white p-1 text-sm font-semibold">
-              {([["Frente", false], ["Costas", true]] as const).map(([label, value]) => (
-                <button
-                  key={label}
-                  onClick={() => {
-                    onUpdate(selected.id, { photoIsBack: value });
-                    onFaceSide(value);
-                  }}
-                  className={`rounded-full py-1 transition ${selected.photoIsBack === value ? "bg-sky-500 text-white" : "text-sky-700/70"}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </Group>
-
-          {mode === "modelo" && (
-            <>
-              <Slider label="Folga" value={selected.ease} min={1} max={1.6} step={0.01} onChange={(v) => onUpdate(selected.id, { ease: v })} format={(v) => `${Math.round((v - 1) * 100)}%`} />
-              <Slider label="Altura da peça" value={selected.offsetY} min={-0.1} max={0.1} step={0.005} onChange={(v) => onUpdate(selected.id, { offsetY: v })} format={(v) => `${(v * 100).toFixed(1)} cm`} />
-              <Slider label="Costuras" value={selected.seamRadius} min={0.02} max={0.12} step={0.005} onChange={(v) => onUpdate(selected.id, { seamRadius: v })} format={(v) => `${(v * 100).toFixed(1)} cm`} />
-            </>
+          {item.garment ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={item.garment.cutoutUrl} alt="Peça" className="size-full object-contain" />
+          ) : (
+            <span className="text-xs text-red-500">Erro</span>
           )}
-        </div>
-      )}
-    </>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -797,41 +645,6 @@ function BodySlider({
       <div className="-mt-1 flex justify-between text-[11px] text-slate-500">
         <span>{left}</span>
         <span>{right}</span>
-      </div>
-    </Group>
-  );
-}
-
-function Slider({
-  label,
-  value,
-  min,
-  max,
-  step,
-  onChange,
-  format = (v) => String(v),
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  onChange: (v: number) => void;
-  format?: (v: number) => string;
-}) {
-  return (
-    <Group title={label}>
-      <div className="flex items-center gap-3">
-        <input
-          type="range"
-          min={min}
-          max={max}
-          step={step}
-          value={value}
-          onChange={(e) => onChange(Number(e.target.value))}
-          className="flex-1 accent-sky-500"
-        />
-        <span className="w-14 text-right text-xs tabular-nums text-slate-500">{format(value)}</span>
       </div>
     </Group>
   );
